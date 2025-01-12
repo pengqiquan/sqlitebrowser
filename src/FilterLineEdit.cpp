@@ -5,6 +5,8 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QWhatsThis>
+#include <QDesktopServices>
+#include <QUrl>
 
 FilterLineEdit::FilterLineEdit(QWidget* parent, std::vector<FilterLineEdit*>* filters, size_t columnnum) :
     QLineEdit(parent),
@@ -67,20 +69,30 @@ void FilterLineEdit::delayedSignalTimerTriggered()
 
 void FilterLineEdit::keyReleaseEvent(QKeyEvent* event)
 {
+    bool actedUponKey = false;
     if(event->key() == Qt::Key_Tab)
     {
         if(filterList && columnNumber < filterList->size() - 1)
         {
             filterList->at(columnNumber + 1)->setFocus();
-            event->accept();
+        } else {
+            QWidget* grandParent = parentWidget()->parentWidget();
+            // Pass focus to the table (grandparent).
+            // Parent would be the table header, which would cycle back to the first
+            // column (due to proxying).
+            if(grandParent)
+                grandParent->setFocus();
         }
+        actedUponKey = true;
     } else if(event->key() == Qt::Key_Backtab) {
         if(filterList && columnNumber > 0)
         {
             filterList->at(columnNumber - 1)->setFocus();
-            event->accept();
+            actedUponKey = true;
         }
     }
+    if(!actedUponKey)
+        QLineEdit::keyReleaseEvent(event);
 }
 
 void FilterLineEdit::focusInEvent(QFocusEvent* event)
@@ -123,6 +135,7 @@ void FilterLineEdit::showContextMenu(const QPoint &pos)
 
     QAction* whatsThisAction = new QAction(QIcon(":/icons/whatis"), tr("What's This?"), editContextMenu);
     connect(whatsThisAction, &QAction::triggered, this, [&]() {
+            QDesktopServices::openUrl(QUrl("https://github.com/sqlitebrowser/sqlitebrowser/wiki/Using-the-Filters"));
             QWhatsThis::showText(pos, whatsThis(), this);
         });
 

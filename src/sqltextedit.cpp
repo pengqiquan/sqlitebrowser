@@ -7,7 +7,7 @@
 #include <Qsci/qscicommand.h>
 
 #include <QShortcut>
-#include <QRegExp>
+#include <QRegularExpression>
 
 SqlUiLexer* SqlTextEdit::sqlLexer = nullptr;
 
@@ -28,25 +28,30 @@ SqlTextEdit::SqlTextEdit(QWidget* parent) :
     registerImage(SqlUiLexer::ApiCompleterIconIdColumn, QImage(":/icons/field"));
     registerImage(SqlUiLexer::ApiCompleterIconIdSchema, QImage(":/icons/database"));
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#define CAST_KEYS(k) QKeyCombination(k).toCombined()
+#else
+#define CAST_KEYS(k) k
+#endif
+
     // Remove command bindings that would interfere with our shortcutToggleComment
-    QsciCommand * command = standardCommands()->boundTo(Qt::ControlModifier+Qt::Key_Slash);
+    QsciCommand * command = standardCommands()->boundTo(CAST_KEYS(Qt::ControlModifier | Qt::Key_Slash));
     command->setKey(0);
-    command = standardCommands()->boundTo(Qt::ControlModifier+Qt::ShiftModifier+Qt::Key_Slash);
+    command = standardCommands()->boundTo(CAST_KEYS(Qt::ControlModifier | Qt::ShiftModifier | Qt::Key_Slash));
     command->setKey(0);
 
     // Change command binding for Ctrl+T so it doesn't interfere with "Open tab"
-    command = standardCommands()->boundTo(Qt::ControlModifier+Qt::Key_T);
-    command->setKey(Qt::ControlModifier+Qt::ShiftModifier+Qt::Key_Up);
+    command = standardCommands()->boundTo(CAST_KEYS(Qt::ControlModifier | Qt::Key_T));
+    command->setKey(CAST_KEYS(Qt::ControlModifier | Qt::ShiftModifier | Qt::Key_Up));
 
     // Change command binding for Ctrl+Shift+T so it doesn't interfere with "Open SQL file"
-    command = standardCommands()->boundTo(Qt::ControlModifier+Qt::ShiftModifier+Qt::Key_T);
-    command->setKey(Qt::ControlModifier+Qt::ShiftModifier+Qt::Key_Insert);
+    command = standardCommands()->boundTo(CAST_KEYS(Qt::ControlModifier | Qt::ShiftModifier | Qt::Key_T));
+    command->setKey(CAST_KEYS(Qt::ControlModifier | Qt::ShiftModifier | Qt::Key_Insert));
+
+#undef CAST_KEYS
 
     QShortcut* shortcutToggleComment = new QShortcut(QKeySequence(tr("Ctrl+/")), this, nullptr, nullptr, Qt::WidgetShortcut);
     connect(shortcutToggleComment, &QShortcut::activated, this, &SqlTextEdit::toggleBlockComment);
-
-    QShortcut* shortcutFocusOut = new QShortcut(QKeySequence(tr("Ctrl+PgDown")), this, nullptr, nullptr, Qt::WidgetShortcut);
-    connect(shortcutFocusOut, &QShortcut::activated, this, &SqlTextEdit::transferFocus);
 
     // Do rest of initialisation
     reloadSettings();
@@ -104,16 +109,19 @@ void SqlTextEdit::toggleBlockComment()
     if (!hasSelectedText()) {
         getCursorPosition(&lineFrom, &indexFrom);
 
+        indexTo = text(lineFrom).length();
+
         // Windows lines requires an adjustment, otherwise the selection would
         // end in the next line.
-        indexTo = text(lineFrom).endsWith("\r\n") ? lineLength(lineFrom)-1 : lineLength(lineFrom);
+        if (text(lineFrom).endsWith("\r\n"))
+            indexTo--;
 
         setSelection(lineFrom, 0, lineFrom, indexTo);
     }
 
     getSelection(&lineFrom, &indexFrom, &lineTo, &indexTo);
 
-    bool uncomment = text(lineFrom).contains(QRegExp("^[ \t]*--"));
+    bool uncomment = text(lineFrom).contains(QRegularExpression("^[ \t]*--"));
 
     // If the selection ends before the first character of a line, don't
     // take this line into account for un/commenting.
@@ -129,20 +137,16 @@ void SqlTextEdit::toggleBlockComment()
         QString lineText = text(line);
 
         if (uncomment)
-            lineText.replace(QRegExp("^([ \t]*)-- ?"), "\\1");
+            lineText.replace(QRegularExpression("^([ \t]*)-- ?"), "\\1");
         else
-            lineText.replace(QRegExp("^"), "-- ");
+            lineText.replace(QRegularExpression("^"), "-- ");
 
-        indexTo = lineText.endsWith("\r\n") ? lineLength(line)-1 : lineLength(line);
+        indexTo = text(line).length();
+        if (lineText.endsWith("\r\n"))
+            indexTo--;
 
         setSelection(line, 0, line, indexTo);
         replaceSelectedText(lineText);
     }
     endUndoAction();
-}
-
-void SqlTextEdit::transferFocus()
-{
-    // We need two jumps to get to the Table Results widget
-    nextInFocusChain()->nextInFocusChain()->setFocus();
 }

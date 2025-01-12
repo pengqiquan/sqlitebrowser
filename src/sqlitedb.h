@@ -123,11 +123,16 @@ public:
     **/
     db_pointer_type get (const QString& user, bool force_wait = false);
 
-    bool setSavepoint(const std::string& pointname = "RESTOREPOINT");
+    bool setSavepoint(const std::string& pointname = "RESTOREPOINT", bool unique = true);
     bool releaseSavepoint(const std::string& pointname = "RESTOREPOINT");
     bool revertToSavepoint(const std::string& pointname = "RESTOREPOINT");
     bool releaseAllSavepoints();
     bool revertAll();
+
+    // Set a non-unique savepoint for the general undoing mechanism (undoing only last write).
+    bool setUndoSavepoint() { return setSavepoint("UNDOPOINT", /* unique */ false); };
+    bool revertToUndoSavepoint() { return revertToSavepoint("UNDOPOINT"); };
+    bool releaseUndoSavepoint() { return releaseSavepoint("UNDOPOINT"); };
 
     bool dump(const QString& filename, const std::vector<std::string>& tablesToDump,
               bool insertColNames, bool insertNew, bool keepOriginal, bool exportSchema, bool exportData, bool keepOldSchema) const;
@@ -225,7 +230,7 @@ public:
 
     const sqlb::TablePtr getTableByName(const sqlb::ObjectIdentifier& name) const
     {
-        if(schemata.empty() || name.schema().empty())
+        if(schemata.empty() || name.schema().empty() || !schemata.count(name.schema()))
             return sqlb::TablePtr{};
         const auto& schema = schemata.at(name.schema());
         if(schema.tables.count(name.name()))
@@ -266,6 +271,12 @@ public:
     bool setPragma(const std::string& pragma, const QString& value);
     bool setPragma(const std::string& pragma, const QString& value, QString& originalvalue);
     bool setPragma(const std::string& pragma, int value, int& originalvalue);
+
+    // These are the two pragmas in SQLite which require values passed as text.
+    // Values follow the order of the SQLite documentation.
+    // Use these values for setPragma().
+    static const QStringList journalModeValues;
+    static const QStringList lockingModeValues;
 
     bool loadExtension(const QString& filename);
     void loadExtensionsFromSettings();

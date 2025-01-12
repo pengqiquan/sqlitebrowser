@@ -24,6 +24,7 @@ SqliteTableModel::SqliteTableModel(DBBrowserDB& db, QObject* parent, const QStri
     , m_db(db)
     , m_lifeCounter(0)
     , m_currentRowCount(0)
+    , m_realRowCount(0)
     , m_encoding(encoding)
 {
     // Load initial settings first
@@ -93,6 +94,11 @@ void SqliteTableModel::handleRowCountComplete (int life_id, int num_rows)
 {
     if(life_id < m_lifeCounter)
         return;
+
+    m_realRowCount = static_cast<unsigned int>(num_rows);
+    if (num_rows > m_rowsLimit) {
+        num_rows = m_rowsLimit;
+    }
 
     m_rowCountAvailable = RowCount::Complete;
     handleFinishedFetch(life_id, static_cast<unsigned int>(num_rows), static_cast<unsigned int>(num_rows));
@@ -173,6 +179,11 @@ void SqliteTableModel::setQuery(const QString& sQuery)
 int SqliteTableModel::rowCount(const QModelIndex&) const
 {
     return static_cast<int>(m_currentRowCount);
+}
+
+int SqliteTableModel::realRowCount() const
+{
+    return static_cast<int>(m_realRowCount);
 }
 
 int SqliteTableModel::columnCount(const QModelIndex&) const
@@ -350,9 +361,20 @@ QVariant SqliteTableModel::data(const QModelIndex &index, int role) const
             }
         }
     } else if(role == Qt::EditRole) {
-        if(!row_available)
+        if(!row_available || data.isNull())
             return QVariant();
-        return decode(data);
+        QVariant decodedData = decode(data);
+        QVariant convertedData = decodedData;
+        bool converted = false;
+        // For the edit role, return the data according to its column type if possible.
+        if(m_vDataTypes.at(column) == SQLITE_INTEGER &&
+           decodedData.canConvert(QMetaType::LongLong)) {
+            converted = convertedData.convert(QMetaType::LongLong);
+        } else if(m_vDataTypes.at(column) == SQLITE_FLOAT &&
+                  decodedData.canConvert(QMetaType::Double)) {
+            converted = convertedData.convert(QMetaType::Double);
+        }
+        return converted? convertedData : decodedData;
     } else if(role == Qt::FontRole) {
         QFont font = m_font;
         if(!row_available || data.isNull() || isBinary(data))
@@ -378,8 +400,10 @@ QVariant SqliteTableModel::data(const QModelIndex &index, int role) const
             QVariant condFormatColor = getMatchingCondFormat(row, column, data, role);
             if (condFormatColor.isValid())
                 return condFormatColor;
-            }
-        // Regular case (not null, not binary and no matching conditional format)
+            if (hasDisplayFormat(index))
+                return m_formattedFgColour;
+        }
+        // Regular case (not null, not binary, no matching conditional format and no display format)
         return m_regFgColour;
     } else if (role == Qt::BackgroundRole) {
         if(!row_available)
@@ -394,8 +418,10 @@ QVariant SqliteTableModel::data(const QModelIndex &index, int role) const
             QVariant condFormatColor = getMatchingCondFormat(row, column, data, role);
             if (condFormatColor.isValid())
                 return condFormatColor;
+            if (hasDisplayFormat(index))
+                return m_formattedBgColour;
         }
-        // Regular case (not null, not binary and no matching conditional format)
+        // Regular case (not null, not binary, no matching conditional format and no display format)
         return m_regBgColour;
     } else if(role == Qt::ToolTipRole) {
         auto fk = getForeignKeyClause(column-1);
@@ -468,6 +494,8 @@ bool SqliteTableModel::setTypedData(const QModelIndex& index, bool isBlob, const
         // can't insert rows while reading data in background
         return false;
     }
+
+    m_db.setUndoSavepoint();
 
     if(index.isValid() && role == Qt::EditRole)
     {
@@ -558,6 +586,18 @@ bool SqliteTableModel::setTypedData(const QModelIndex& index, bool isBlob, const
     return false;
 }
 
+// Custom display format set?
+bool SqliteTableModel::hasDisplayFormat (const QModelIndex& index) const
+{
+    bool custom_display_format = false;
+    if(m_query.selectedColumns().size())
+    {
+        if(index.column() > 0)
+            custom_display_format = m_query.selectedColumns().at(static_cast<size_t>(index.column())-1).selector != m_query.selectedColumns().at(static_cast<size_t>(index.column())-1).original_column;
+    }
+    return custom_display_format;
+}
+
 Qt::ItemFlags SqliteTableModel::flags(const QModelIndex& index) const
 {
     if(!index.isValid())
@@ -565,15 +605,7 @@ Qt::ItemFlags SqliteTableModel::flags(const QModelIndex& index) const
 
     Qt::ItemFlags ret = QAbstractTableModel::flags(index) | Qt::ItemIsDropEnabled;
 
-    // Custom display format set?
-    bool custom_display_format = false;
-    if(m_query.selectedColumns().size())
-    {
-        if(index.column() > 0)
-            custom_display_format = m_query.selectedColumns().at(static_cast<size_t>(index.column())-1).selector != m_query.selectedColumns().at(static_cast<size_t>(index.column())-1).original_column;
-    }
-
-    if(!isBinary(index) && !custom_display_format && isEditable(index))
+    if(!isBinary(index) && !hasDisplayFormat(index) && isEditable(index))
         ret |= Qt::ItemIsEditable;
     return ret;
 }
@@ -654,6 +686,7 @@ bool SqliteTableModel::insertRows(int row, int count, const QModelIndex& parent)
     {
         m_cache.insert(i + static_cast<size_t>(row), std::move(tempList.at(i)));
         m_currentRowCount++;
+        m_realRowCount++;
     }
     endInsertRows();
 
@@ -687,6 +720,7 @@ bool SqliteTableModel::removeRows(int row, int count, const QModelIndex& parent)
         {
             m_cache.erase(static_cast<size_t>(row + i));
             m_currentRowCount--;
+            m_realRowCount--;
         }
 
         endRemoveRows();
@@ -829,6 +863,7 @@ void SqliteTableModel::clearCache()
     m_cache.clear();
 
     m_currentRowCount = 0;
+    m_realRowCount = 0;
     m_rowCountAvailable = RowCount::Unknown;
 }
 
@@ -973,6 +1008,9 @@ bool SqliteTableModel::completeCache () const
     progress.setCancelButton(cancelButton);
 
     progress.setWindowModality(Qt::ApplicationModal);
+    // Disable context help button on Windows
+    progress.setWindowFlags(progress.windowFlags()
+                            & ~Qt::WindowContextHelpButtonHint);
     progress.show();
 
     waitUntilIdle();
@@ -1009,7 +1047,12 @@ QModelIndex SqliteTableModel::nextMatch(const QModelIndex& start, const std::vec
 {
     // Extract flags
     bool whole_cell = !(flags & Qt::MatchContains);
-    bool regex = flags & Qt::MatchRegExp;
+#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
+    auto match_flag = Qt::MatchRegExp;
+#else
+    auto match_flag = Qt::MatchRegularExpression;
+#endif
+    bool regex = flags & match_flag;
     Qt::CaseSensitivity case_sensitive = ((flags & Qt::MatchCaseSensitive) ? Qt::CaseSensitive : Qt::CaseInsensitive);
     bool wrap = flags & Qt::MatchWrap;
     int increment = (reverse ? -1 : 1);
@@ -1120,6 +1163,8 @@ void SqliteTableModel::reloadSettings()
     m_blobText = Settings::getValue("databrowser", "blob_text").toString();
     m_regFgColour = QColor(Settings::getValue("databrowser", "reg_fg_colour").toString());
     m_regBgColour = QColor(Settings::getValue("databrowser", "reg_bg_colour").toString());
+    m_formattedFgColour = QColor(Settings::getValue("databrowser", "formatted_fg_colour").toString());
+    m_formattedBgColour = QColor(Settings::getValue("databrowser", "formatted_bg_colour").toString());
     m_nullFgColour = QColor(Settings::getValue("databrowser", "null_fg_colour").toString());
     m_nullBgColour = QColor(Settings::getValue("databrowser", "null_bg_colour").toString());
     m_binFgColour = QColor(Settings::getValue("databrowser", "bin_fg_colour").toString());
@@ -1127,6 +1172,7 @@ void SqliteTableModel::reloadSettings()
     m_font = QFont(Settings::getValue("databrowser", "font").toString());
     m_font.setPointSize(Settings::getValue("databrowser", "fontsize").toInt());
     m_symbolLimit = Settings::getValue("databrowser", "symbol_limit").toInt();
+    m_rowsLimit = Settings::getValue("databrowser", "rows_limit").toInt();
     m_imagePreviewEnabled = Settings::getValue("databrowser", "image_preview").toBool();
     m_chunkSize = static_cast<std::size_t>(Settings::getValue("db", "prefetchsize").toUInt());
 }
