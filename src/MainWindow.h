@@ -43,6 +43,13 @@ public:
     DBBrowserDB& getDb() { return db; }
 
 private:
+    enum LoadAttempResult
+    {
+        Success,
+        NotValidFormat,
+        Aborted
+    };
+
     struct PragmaValues
     {
         int autovacuum;
@@ -89,6 +96,7 @@ private:
     static int MaxRecentFiles;
     QVector<QAction*> recentFileActs;
     QAction* clearRecentFilesAction;
+    QAction* optionToAutoLoadLastDBFileAtStartup;
     QAction* recentSeparatorAct;
 
     /**
@@ -120,6 +128,7 @@ private:
 
     void updateRecentFileActions();
     void clearRecentFiles();
+    void toggleAutoLoadLastDBFileAtStartupOption();
     void setCurrentFile(const QString& fileName);
     void addToRecentFilesMenu(const QString& filename, bool read_only = false);
     void activateFields(bool enable = true);
@@ -166,7 +175,8 @@ private slots:
     void changeTreeSelection();
     void fileNew();
     void fileNewInMemoryDatabase(bool open_create_dialog = true);
-    void refreshTableBrowsers();
+    // Refresh visible table browsers. When all is true, refresh all browsers.
+    void refreshTableBrowsers(bool all = false);
     bool fileClose();
     bool fileSaveAs();
     void createTable();
@@ -187,6 +197,7 @@ private slots:
     void exportTableToJson();
     void fileSave();
     void fileRevert();
+    void undo();
     void exportDatabaseToSQL();
     void importDatabaseFromSQL();
     void openRecentFile();
@@ -202,14 +213,15 @@ private slots:
     void saveSqlResultsAsJson();
     void saveSqlResultsAsView();
     void loadExtension();
-    void checkNewVersion(const QString& versionstring, const QString& url);
+    void checkNewVersion(const bool automatic);
+    void compareVersionAndShowDialog(const QString& versionstring, const QString& url, const bool automatic);
     void openLinkWiki() const;
     void openLinkBugReport() const;
     void openLinkFeatureRequest() const;
     void openLinkSqlCipherFaq() const;
     void openLinkWebsite() const;
     void openLinkDonatePatreon() const;
-    bool loadProject(QString filename = QString(), bool readOnly = false);
+    LoadAttempResult loadProject(QString filename = QString(), bool readOnly = false);
     void saveProject();
     void saveProjectAs();
     void fileAttach(const QString& fileName = QString());

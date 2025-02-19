@@ -1,6 +1,7 @@
 #include <QPushButton>
 #include <QUrlQuery>
-#include <QRegExpValidator>
+
+#include <QRegularExpressionValidator>
 
 #include <json.hpp>
 
@@ -16,8 +17,8 @@ RemotePushDialog::RemotePushDialog(QWidget* parent, const QString& host, const Q
     ui(new Ui::RemotePushDialog),
     m_host(host),
     m_clientCert(clientCert),
-    m_nameValidator(new QRegExpValidator(QRegExp("^[a-z,A-Z,0-9,\\.,\\-,\\_,\\(,\\),\\+,\\ ]+$"), this)),
-    m_branchValidator(new QRegExpValidator(QRegExp("^[a-z,A-Z,0-9,\\^,\\.,\\-,\\_,\\/,\\(,\\),\\:,\\&,\\ )]+$"), this))
+    m_nameValidator(new QRegularExpressionValidator(QRegularExpression("^[a-z,A-Z,0-9,\\.,\\-,\\_,\\(,\\),\\+,\\ ]+$"), this)),
+    m_branchValidator(new QRegularExpressionValidator(QRegularExpression("^[a-z,A-Z,0-9,\\^,\\.,\\-,\\_,\\/,\\(,\\),\\:,\\&,\\ )]+$"), this))
 {
     // Create UI
     ui->setupUi(this);
@@ -153,7 +154,7 @@ void RemotePushDialog::reloadBranchList(const QString& select_branch)
         json obj_branches = obj["branches"];
 
         // Get default branch
-        std::string default_branch = (obj.contains("default_branch") && !obj["default_branch"].empty()) ? obj["default_branch"] : "master";
+        std::string default_branch = (obj.contains("default_branch") && !obj["default_branch"].empty()) ? obj["default_branch"] : "main";
 
         // Clear branch list and add the default branch
         ui->comboBranch->clear();

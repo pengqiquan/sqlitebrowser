@@ -358,6 +358,34 @@ TableBrowser::TableBrowser(DBBrowserDB* _db, QWidget* parent) :
         find(ui->editFindExpression->text(), true, true, ReplaceMode::ReplaceAll);
     });
 
+    QShortcut* shortcutActionFilter = new QShortcut(QKeySequence("Ctrl+Shift+F"), this, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    connect(shortcutActionFilter, &QShortcut::activated, this, [this](){
+        // Restore cursor because in the ExtendedTableWidget it is changed to a hand when Ctrl+Shift
+        // is pressed.
+        QApplication::restoreOverrideCursor();
+        FilterTableHeader* header = qobject_cast<FilterTableHeader*>(ui->dataTable->horizontalHeader());
+        // Set the focus to the current column if valid, otherwise, set focus to the first visible
+        // column.
+        if(!header) {
+            ui->dataTable->horizontalHeader()->setFocus();
+        } else if(currentIndex().isValid()) {
+            header->setFocusColumn(static_cast<size_t>(currentIndex().column()));
+        } else {
+            for(int col = 0; col < ui->dataTable->model()->columnCount(); col++)
+            {
+                if(!ui->dataTable->isColumnHidden(col)) {
+                    header->setFocusColumn(static_cast<size_t>(col));
+                    break;
+                }
+            }
+        }
+    });
+
+    QShortcut* shortcutActionGlobalFilter = new QShortcut(QKeySequence("F3"), this, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    connect(shortcutActionGlobalFilter, &QShortcut::activated, this, [this](){
+        ui->editGlobalFilter->setFocus();
+    });
+
     // Recreate the model
     if(m_model)
         delete m_model;
@@ -508,6 +536,15 @@ void TableBrowser::refresh()
         });
     }
 
+    // Delete settings of no-longer existent tables
+    for (auto it = m_settings.cbegin(); it != m_settings.cend(); ) {
+        if (!db->getTableByName(it->first)) {
+            it = m_settings.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     // Retrieve the stored data for this table if there is any. If there are no settings for this table,
     // this will insert and return a settings object with default values.
     const sqlb::ObjectIdentifier tablename = currentlyBrowsedTableName();
@@ -523,10 +560,9 @@ void TableBrowser::refresh()
     emit currentTableChanged(tablename);
 
     // Build query and apply settings
-   applyModelSettings(storedData, buildQuery(storedData, tablename));
-   applyViewportSettings(storedData, tablename);
-   updateRecordsetLabel();
-   emit updatePlot(ui->dataTable, m_model, &m_settings[tablename], true);
+    applyModelSettings(storedData, buildQuery(storedData, tablename));
+    applyViewportSettings(storedData, tablename);
+    emit updatePlot(ui->dataTable, m_model, &m_settings[tablename], true);
 }
 
 void TableBrowser::clearFilters()
@@ -697,15 +733,17 @@ void TableBrowser::modifyFormat(std::function<void(CondFormat&)> changeFunction)
 void TableBrowser::updateRecordsetLabel()
 {
     // Get all the numbers, i.e. the number of the first row and the last row as well as the total number of rows
+    // Internal row numbers start at 0, but we want to show them starting at 1.
     int from = ui->dataTable->verticalHeader()->visualIndexAt(0) + 1;
     int total = m_model->rowCount();
+    int real_total = m_model->realRowCount();
     int to = from + ui->dataTable->numVisibleRows() - 1;
     if(to < 0)
             to = 0;
 
     // Adjust visible rows to contents if necessary, and then take the new visible rows, which might have changed.
     if(m_adjustRows) {
-        for(int i=from; i<=to; i++)
+        for(int i=from-1; i<=to-1; i++)
             ui->dataTable->resizeRowToContents(i);
         from = ui->dataTable->verticalHeader()->visualIndexAt(0) + 1;
         to = from + ui->dataTable->numVisibleRows() - 1;
@@ -729,10 +767,13 @@ void TableBrowser::updateRecordsetLabel()
         txt = tr("determining row count...");
         break;
     case SqliteTableModel::RowCount::Partial:
-        txt = tr("%1 - %2 of >= %3").arg(from).arg(to).arg(total);
+        txt = tr("%L1 - %L2 of >= %L3").arg(from).arg(to).arg(total);
         break;
     case SqliteTableModel::RowCount::Complete:
-        txt = tr("%1 - %2 of %3").arg(from).arg(to).arg(total);
+        txt = tr("%L1 - %L2 of %L3").arg(from).arg(to).arg(real_total);
+        if (real_total != total) {
+            txt.append(tr(" (clipped at %L1 rows)").arg(total));
+        }
         break;
     }
     ui->labelRecordset->setText(txt);
@@ -1292,7 +1333,7 @@ void TableBrowser::addRecord()
         selectTableLine(row);
     } else {
         // Error inserting empty row.
-        // User has to provide values acomplishing the constraints. Open Add Record Dialog.
+        // User has to provide values accomplishing the constraints. Open Add Record Dialog.
         insertValues();
     }
     updateRecordsetLabel();
@@ -1540,7 +1581,12 @@ void TableBrowser::jumpToRow(const sqlb::ObjectIdentifier& table, std::string co
 static QString replaceInValue(QString value, const QString& find, const QString& replace, Qt::MatchFlags flags)
 {
     // Helper function which replaces a string in another string by a third string. It uses regular expressions if told so.
-    if(flags.testFlag(Qt::MatchRegExp))
+#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
+    auto match_flag = Qt::MatchRegExp;
+#else
+    auto match_flag = Qt::MatchRegularExpression;
+#endif
+    if(flags.testFlag(match_flag))
     {
         QRegularExpression reg_exp(find, (flags.testFlag(Qt::MatchCaseSensitive) ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption));
         if(!flags.testFlag(Qt::MatchContains))
@@ -1585,8 +1631,13 @@ void TableBrowser::find(const QString& expr, bool forward, bool include_first, R
     else
         flags |= Qt::MatchContains;
 
+#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
+    auto match_flag = Qt::MatchRegExp;
+#else
+    auto match_flag = Qt::MatchRegularExpression;
+#endif
     if(ui->checkFindRegEx->isChecked())
-        flags |= Qt::MatchRegExp;
+        flags |= match_flag;
 
     // Prepare list of columns to search in. We only search in non-hidden rows
     std::vector<int> column_list;
@@ -1673,11 +1724,13 @@ void TableBrowser::fetchedData()
         return;
     m_columnsResized = true;
 
-    // Set column widths according to their contents but make sure they don't exceed a certain size
-    ui->dataTable->resizeColumnsToContents();
-    for(int i = 0; i < m_model->columnCount(); i++)
-    {
-        if(ui->dataTable->columnWidth(i) > 300)
-            ui->dataTable->setColumnWidth(i, 300);
+    if (m_settings[currentlyBrowsedTableName()].columnWidths.empty()) {
+        // Set column widths according to their contents but make sure they don't exceed a certain size
+        ui->dataTable->resizeColumnsToContents();
+        for(int i = 0; i < m_model->columnCount(); i++)
+        {
+            if(ui->dataTable->columnWidth(i) > 300)
+                ui->dataTable->setColumnWidth(i, 300);
+        }
     }
 }

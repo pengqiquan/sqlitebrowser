@@ -3,7 +3,6 @@
 #include "sqlitetablemodel.h"
 #include "CipherDialog.h"
 #include "CipherSettings.h"
-#include "DotenvFormat.h"
 #include "Settings.h"
 #include "Data.h"
 
@@ -25,6 +24,9 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+
+const QStringList DBBrowserDB::journalModeValues = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"};
+const QStringList DBBrowserDB::lockingModeValues = {"NORMAL", "EXCLUSIVE"};
 
 QStringList DBBrowserDB::Datatypes = {"INTEGER", "TEXT", "BLOB", "REAL", "NUMERIC"};
 QStringList DBBrowserDB::DatatypesStrict = {"INT", "INTEGER", "TEXT", "BLOB", "REAL", "ANY"};
@@ -457,13 +459,11 @@ bool DBBrowserDB::tryEncryptionSettings(const QString& filePath, bool* encrypted
                 QString databaseFileName(databaseFileInfo.fileName());
 
                 QString dotenvFilePath = databaseDirectoryPath + "/.env";
-                static const QSettings::Format dotenvFormat = QSettings::registerFormat("env", &DotenvFormat::readEnvFile, nullptr);
-                QSettings dotenv(dotenvFilePath, dotenvFormat);
+                QSettings dotenv(dotenvFilePath, QSettings::IniFormat);
 
                 QVariant passwordValue = dotenv.value(databaseFileName);
 
                 foundDotenvPassword = !passwordValue.isNull();
-
                 isDotenvChecked = true;
 
                 if (foundDotenvPassword)
@@ -564,7 +564,7 @@ void DBBrowserDB::getSqliteVersion(QString& sqlite, QString& sqlcipher)
 #endif
 }
 
-bool DBBrowserDB::setSavepoint(const std::string& pointname)
+bool DBBrowserDB::setSavepoint(const std::string& pointname, bool unique)
 {
     if(!isOpen())
         return false;
@@ -572,7 +572,7 @@ bool DBBrowserDB::setSavepoint(const std::string& pointname)
         qWarning() << "setSavepoint: not done. DB is read-only";
         return false;
     }
-    if(contains(savepointList, pointname))
+    if(unique && contains(savepointList, pointname))
         return true;
 
     executeSQL("SAVEPOINT " + sqlb::escapeIdentifier(pointname) + ";", false, true);
@@ -882,6 +882,9 @@ bool DBBrowserDB::dump(const QString& filePath,
 
         QProgressDialog progress(tr("Exporting database to SQL file..."),
                                  tr("Cancel"), 0, static_cast<int>(numRecordsTotal));
+        // Disable context help button on Windows
+        progress.setWindowFlags(progress.windowFlags()
+                                & ~Qt::WindowContextHelpButtonHint);
         progress.setWindowModality(Qt::ApplicationModal);
         progress.show();
         qApp->processEvents();
@@ -1045,7 +1048,7 @@ bool DBBrowserDB::dump(const QString& filePath,
 
         QApplication::restoreOverrideCursor();
         qApp->processEvents();
-        return true;
+        return stream.status() == QTextStream::Ok && file.error() == QFileDevice::NoError;
     }
     return false;
 }
@@ -1115,6 +1118,9 @@ bool DBBrowserDB::executeMultiSQL(QByteArray query, bool dirty, bool log)
     QProgressDialog progress(tr("Executing SQL..."),
                              tr("Cancel"), 0, 100);
     progress.setWindowModality(Qt::ApplicationModal);
+    // Disable context help button on Windows
+    progress.setWindowFlags(progress.windowFlags()
+                            & ~Qt::WindowContextHelpButtonHint);
     progress.show();
 
     // Execute the statement by looping until SQLite stops giving back a tail string
@@ -1511,7 +1517,6 @@ bool DBBrowserDB::updateRecord(const sqlb::ObjectIdentifier& table, const std::s
         sql += "sqlb_make_single_value(" + sqlb::joinStringVector(sqlb::escapeIdentifier(pks), ",") + ")=" + sqlb::escapeString(rowid.toStdString());
 
     setSavepoint();
-    logSQL(QString::fromStdString(sql), kLogMsg_App);
 
     // If we get a NULL QByteArray we insert a NULL value, and for that
     // we can pass NULL to sqlite3_bind_text() so that it behaves like sqlite3_bind_null()
@@ -1537,8 +1542,11 @@ bool DBBrowserDB::updateRecord(const sqlb::ObjectIdentifier& table, const std::s
                 success = -1;
         }
     }
-    if(success == 1 && sqlite3_step(stmt) != SQLITE_DONE)
-        success = -1;
+    if(success == 1) {
+        logSQL(QString::fromUtf8(sqlite3_expanded_sql(stmt)), kLogMsg_App);
+        if(sqlite3_step(stmt) != SQLITE_DONE)
+            success = -1;
+    }
     if(success != 0 && sqlite3_finalize(stmt) != SQLITE_OK)
         success = -1;
 
@@ -1795,6 +1803,11 @@ bool DBBrowserDB::alterTable(const sqlb::ObjectIdentifier& tablename, const sqlb
         // Ignore deleted fields
         QString to = track_columns[from];
         if(to.isNull())
+            continue;
+
+        // Ignore generated columns
+        auto it = sqlb::findField(new_table, to.toStdString());
+        if(it->generated())
             continue;
 
         copy_values_from.push_back(from.toStdString());
@@ -2164,6 +2177,16 @@ void DBBrowserDB::loadExtensionsFromSettings()
     {
         if(loadExtension(ext) == false)
             QMessageBox::warning(nullptr, QApplication::applicationName(), tr("Error loading extension: %1").arg(lastError()));
+    }
+
+    const QVariantMap builtinList = Settings::getValue("extensions", "builtin").toMap();
+    for(const QString& ext : builtinList.keys())
+    {
+        if(builtinList.value(ext).toBool())
+        {
+            if(loadExtension(ext) == false)
+                QMessageBox::warning(nullptr, QApplication::applicationName(), tr("Error loading built-in extension: %1").arg(lastError()));
+        }
     }
 }
 
